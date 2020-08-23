@@ -228,19 +228,22 @@ public final class DexClassesComparator {
             // from result.
             if (Utils.isStringMatchesPatterns(desc, patternsOfIgnoredRemovedClassDesc)) {
                 logger.i(TAG, "Ignored deleted class: %s", desc);
-                continue;
             } else {
                 logger.i(TAG, "Deleted class: %s", desc);
+                deletedClassInfoList.add(oldClassDescriptorToClassInfoMap.get(desc));
             }
-            deletedClassInfoList.add(oldClassDescriptorToClassInfoMap.get(desc));
         }
 
         Set<String> addedClassDescs = new HashSet<>(newDescriptorOfClassesToCheck);
         addedClassDescs.removeAll(oldDescriptorOfClassesToCheck);
 
         for (String desc : addedClassDescs) {
-            logger.i(TAG, "Added class: %s", desc);
-            addedClassInfoList.add(newClassDescriptorToClassInfoMap.get(desc));
+            if (Utils.isStringMatchesPatterns(desc, patternsOfIgnoredRemovedClassDesc)) {
+                logger.i(TAG, "Ignored added class: %s", desc);
+            } else {
+                logger.i(TAG, "Added class: %s", desc);
+                addedClassInfoList.add(newClassDescriptorToClassInfoMap.get(desc));
+            }
         }
 
         Set<String> mayBeChangedClassDescs = new HashSet<>(oldDescriptorOfClassesToCheck);
@@ -257,10 +260,14 @@ public final class DexClassesComparator {
                             oldClassInfo.classDef,
                             newClassInfo.classDef
                     )) {
-                        logger.i(TAG, "Changed class: %s", desc);
-                        changedClassDescToClassInfosMap.put(
-                                desc, new DexClassInfo[]{oldClassInfo, newClassInfo}
-                        );
+                        if (Utils.isStringMatchesPatterns(desc, patternsOfIgnoredRemovedClassDesc)) {
+                            logger.i(TAG, "Ignored changed class: %s", desc);
+                        } else {
+                            logger.i(TAG, "Changed class: %s", desc);
+                            changedClassDescToClassInfosMap.put(
+                                    desc, new DexClassInfo[]{oldClassInfo, newClassInfo}
+                            );
+                        }
                     }
                     break;
                 }
@@ -271,11 +278,18 @@ public final class DexClassesComparator {
                             oldClassInfo.classDef,
                             newClassInfo.classDef
                     )) {
-                        logger.i(TAG, "Ref-changed class: %s", desc);
-                        changedClassDescToClassInfosMap.put(
-                                desc, new DexClassInfo[]{oldClassInfo, newClassInfo}
-                        );
+                        if (Utils.isStringMatchesPatterns(desc, patternsOfIgnoredRemovedClassDesc)) {
+                            logger.i(TAG, "Ignored referrer-affected changed class: %s", desc);
+                        } else {
+                            logger.i(TAG, "Referrer-affected change class: %s", desc);
+                            changedClassDescToClassInfosMap.put(
+                                    desc, new DexClassInfo[]{oldClassInfo, newClassInfo}
+                            );
+                        }
                     }
+                    break;
+                }
+                default: {
                     break;
                 }
             }
@@ -1463,6 +1477,11 @@ public final class DexClassesComparator {
                 return false;
             }
             return owner.computeSignature(false).equals(other.owner.computeSignature(false));
+        }
+
+        @Override
+        public int hashCode() {
+            return owner.computeSignature(false).hashCode();
         }
     }
 

@@ -45,7 +45,7 @@ import static com.tencent.tinker.build.util.DexClassesComparator.DexGroup;
 public class ChangedClassesDexClassInfoCollector {
     private static final String TAG = "ChangedClassesDexClassInfoCollector";
 
-    private static final DexPatcherLogger logger = new DexPatcherLogger();
+    private static final DexPatcherLogger LOGGER = new DexPatcherLogger();
     private final Set<String> excludedClassPatterns = new HashSet<>();
     private boolean includeRefererToRefererAffectedClasses = false;
 
@@ -61,7 +61,7 @@ public class ChangedClassesDexClassInfoCollector {
     }
 
     public ChangedClassesDexClassInfoCollector setLogger(DexPatcherLogger.IDexPatcherLogger loggerImpl) {
-        this.logger.setLoggerImpl(loggerImpl);
+        LOGGER.setLoggerImpl(loggerImpl);
         return this;
     }
 
@@ -71,11 +71,13 @@ public class ChangedClassesDexClassInfoCollector {
     }
 
     public Set<DexClassInfo> doCollect(DexGroup oldDexGroup, DexGroup newDexGroup) {
+        final Set<String> classDescsInResult = new HashSet<>();
         final Set<DexClassInfo> result = new HashSet<>();
 
         DexClassesComparator dexClassCmptor = new DexClassesComparator("*");
         dexClassCmptor.setCompareMode(DexClassesComparator.COMPARE_MODE_NORMAL);
         dexClassCmptor.setIgnoredRemovedClassDescPattern(excludedClassPatterns);
+        dexClassCmptor.setLogger(LOGGER.getLoggerImpl());
         dexClassCmptor.startCheck(oldDexGroup, newDexGroup);
 
         // So far we collected infos of all added, changed, and deleted classes.
@@ -86,8 +88,12 @@ public class ChangedClassesDexClassInfoCollector {
         for (DexClassInfo[] oldAndNewInfoPair : changedClassInfos) {
             final DexClassInfo newClassInfo = oldAndNewInfoPair[1];
 
-            logger.i(TAG, "Add class %s to changed classes dex.", newClassInfo.classDesc);
+            LOGGER.i(TAG, "Add class %s to changed classes dex.", newClassInfo.classDesc);
             result.add(newClassInfo);
+        }
+
+        for (DexClassInfo classInfo : result) {
+            classDescsInResult.add(classInfo.classDesc);
         }
 
         if (includeRefererToRefererAffectedClasses) {
@@ -101,8 +107,9 @@ public class ChangedClassesDexClassInfoCollector {
             Set<DexClassInfo> oldClassInfos = oldDexGroup.getClassInfosInDexesWithDuplicateCheck();
 
             for (DexClassInfo oldClassInfo : oldClassInfos) {
-                if (isClassReferToAnyClasses(oldClassInfo, referrerAffectedChangedClassDescs)) {
-                    logger.i(TAG, "Add class %s in old dex to changed classes dex since it is affected by modified referee.", oldClassInfo.classDesc);
+                if (!classDescsInResult.contains(oldClassInfo.classDesc)
+                        && isClassReferToAnyClasses(oldClassInfo, referrerAffectedChangedClassDescs)) {
+                    LOGGER.i(TAG, "Add class %s in old dex to changed classes dex since it is affected by modified referee.", oldClassInfo.classDesc);
                     result.add(oldClassInfo);
                 }
             }
@@ -214,10 +221,13 @@ public class ChangedClassesDexClassInfoCollector {
                     refInfoInLog = "invoking method: " + getMethodProtoTypeStr(methodId);
                     break;
                 }
+                default: {
+                    break;
+                }
             }
             if (typeName != null && refereeClassDescs.contains(typeName)) {
                 MethodId methodId = owner.methodIds().get(method.methodIndex);
-                logger.i(
+                LOGGER.i(
                         TAG,
                         "Method %s in class %s referenced referrer-affected class %s by %s",
                         getMethodProtoTypeStr(methodId),

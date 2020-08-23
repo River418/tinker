@@ -35,6 +35,7 @@ import com.tencent.tinker.lib.util.TinkerServiceInternals;
 import com.tencent.tinker.loader.TinkerRuntimeException;
 import com.tencent.tinker.loader.shareutil.ShareConstants;
 import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
+import com.tencent.tinker.loader.shareutil.SharePatchInfo;
 import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
 
 import java.io.File;
@@ -102,11 +103,9 @@ public class Tinker {
         if (!sInstalled) {
             throw new TinkerRuntimeException("you must install tinker before get tinker sInstance");
         }
-        if (sInstance == null) {
-            synchronized (Tinker.class) {
-                if (sInstance == null) {
-                    sInstance = new Builder(context).build();
-                }
+        synchronized (Tinker.class) {
+            if (sInstance == null) {
+                sInstance = new Builder(context).build();
             }
         }
         return sInstance;
@@ -260,12 +259,34 @@ public class Tinker {
         if (patchDirectory == null) {
             return;
         }
-        if (isTinkerLoaded()) {
-            TinkerLog.e(TAG, "it is not safety to clean patch when tinker is loaded, you should kill all your process after clean!");
+        final File patchInfoFile = SharePatchFileUtil.getPatchInfoFile(patchDirectory.getAbsolutePath());
+        if (!patchInfoFile.exists()) {
+            TinkerLog.w(TAG, "try to clean patch while patch info file does not exist.");
+            return;
         }
-        SharePatchFileUtil.deleteDir(patchDirectory);
+        final File patchInfoLockFile = SharePatchFileUtil.getPatchInfoLockFile(patchDirectory.getAbsolutePath());
+        final SharePatchInfo patchInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
+        if (patchInfo != null) {
+            patchInfo.isRemoveNewVersion = true;
+            SharePatchInfo.rewritePatchInfoFileWithLock(patchInfoFile, patchInfo, patchInfoLockFile);
+        }
     }
 
+    /**
+     * rollback patch should restart all process
+     */
+    public void rollbackPatch() {
+        if (!isTinkerLoaded()) {
+            TinkerLog.w(TAG, "rollbackPatch: tinker is not loaded, just return");
+            return;
+        }
+        // kill all other process
+        ShareTinkerInternals.killAllOtherProcess(context);
+        // clean patch
+        cleanPatch();
+        // kill itself
+        android.os.Process.killProcess(android.os.Process.myPid());
+    }
     /**
      * clean the patch version files, such as tinker/patch-641e634c
      *
@@ -295,13 +316,13 @@ public class Tinker {
     /**
      * try delete the temp version files
      *
-     * @param patchFile
+     * @param patchApk
      */
-    public void cleanPatchByVersion(File patchFile) {
-        if (patchDirectory == null || patchFile == null || !patchFile.exists()) {
+    public void cleanPatchByPatchApk(File patchApk) {
+        if (patchDirectory == null || patchApk == null || !patchApk.exists()) {
             return;
         }
-        String versionName = SharePatchFileUtil.getPatchVersionDirectory(SharePatchFileUtil.getMD5(patchFile));
+        String versionName = SharePatchFileUtil.getPatchVersionDirectory(SharePatchFileUtil.getMD5(patchApk));
         cleanPatchByVersion(versionName);
     }
 

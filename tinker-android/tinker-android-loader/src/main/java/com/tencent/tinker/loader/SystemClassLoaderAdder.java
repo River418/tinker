@@ -17,7 +17,6 @@
 
 package com.tencent.tinker.loader;
 
-import android.annotation.SuppressLint;
 import android.app.Application;
 import android.os.Build;
 import android.util.Log;
@@ -32,8 +31,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.ListIterator;
+import java.util.Map;
 import java.util.zip.ZipFile;
 
 import dalvik.system.DexFile;
@@ -48,26 +51,27 @@ public class SystemClassLoaderAdder {
     private static final String TAG = "Tinker.ClassLoaderAdder";
     private static int sPatchDexCount = 0;
 
-    @SuppressLint("NewApi")
-    public static void installDexes(Application application, PathClassLoader loader, File dexOptDir, List<File> files)
+    public static void installDexes(Application application, ClassLoader loader, File dexOptDir, List<File> files, boolean isProtectedApp)
         throws Throwable {
         Log.i(TAG, "installDexes dexOptDir: " + dexOptDir.getAbsolutePath() + ", dex size:" + files.size());
 
         if (!files.isEmpty()) {
+            files = createSortedAdditionalPathEntries(files);
             ClassLoader classLoader = loader;
-            if (Build.VERSION.SDK_INT >= 24) {
-                classLoader = AndroidNClassLoader.inject(loader, application);
-            }
-            //because in dalvik, if inner class is not the same classloader with it wrapper class.
-            //it won't fail at dex2opt
-            if (Build.VERSION.SDK_INT >= 23) {
-                V23.install(classLoader, files, dexOptDir);
-            } else if (Build.VERSION.SDK_INT >= 19) {
-                V19.install(classLoader, files, dexOptDir);
-            } else if (Build.VERSION.SDK_INT >= 14) {
-                V14.install(classLoader, files, dexOptDir);
+            if (Build.VERSION.SDK_INT >= 24 && !isProtectedApp) {
+                classLoader = NewClassLoaderInjector.inject(application, loader, dexOptDir, files);
             } else {
-                V4.install(classLoader, files, dexOptDir);
+                //because in dalvik, if inner class is not the same classloader with it wrapper class.
+                //it won't fail at dex2opt
+                if (Build.VERSION.SDK_INT >= 23) {
+                    V23.install(classLoader, files, dexOptDir);
+                } else if (Build.VERSION.SDK_INT >= 19) {
+                    V19.install(classLoader, files, dexOptDir);
+                } else if (Build.VERSION.SDK_INT >= 14) {
+                    V14.install(classLoader, files, dexOptDir);
+                } else {
+                    V4.install(classLoader, files, dexOptDir);
+                }
             }
             //install done
             sPatchDexCount = files.size();
@@ -77,6 +81,22 @@ public class SystemClassLoaderAdder {
                 //reset patch dex
                 SystemClassLoaderAdder.uninstallPatchDex(classLoader);
                 throw new TinkerRuntimeException(ShareConstants.CHECK_DEX_INSTALL_FAIL);
+            }
+        }
+    }
+
+    public static void installApk(PathClassLoader loader, List<File> files) throws Throwable {
+        if (!files.isEmpty()) {
+            files = createSortedAdditionalPathEntries(files);
+            ClassLoader classLoader = loader;
+            ArkHot.install(classLoader, files);
+            sPatchDexCount = files.size();
+            Log.i(TAG, "after loaded classloader: " + classLoader + ", dex size:" + sPatchDexCount);
+
+            if (!checkDexInstall(classLoader)) {
+                // reset patch dex
+//                SystemClassLoaderAdder.uninstallPatchDex(classLoader);
+//                throw new TinkerRuntimeException(ShareConstants.CHECK_DEX_INSTALL_FAIL);
             }
         }
     }
@@ -96,6 +116,7 @@ public class SystemClassLoaderAdder {
             try {
                 ShareReflectUtil.reduceFieldArray(classLoader, "mDexs", sPatchDexCount);
             } catch (Exception e) {
+                // Ignored.
             }
         }
     }
@@ -106,6 +127,84 @@ public class SystemClassLoaderAdder {
         boolean isPatch = (boolean) filed.get(null);
         Log.w(TAG, "checkDexInstall result:" + isPatch);
         return isPatch;
+    }
+
+    private static List<File> createSortedAdditionalPathEntries(List<File> additionalPathEntries) {
+        final List<File> result = new ArrayList<>(additionalPathEntries);
+
+        final Map<String, Boolean> matchesClassNPatternMemo = new HashMap<>();
+        for (File file : result) {
+            final String name = file.getName();
+            matchesClassNPatternMemo.put(name, ShareConstants.CLASS_N_PATTERN.matcher(name).matches());
+        }
+        Collections.sort(result, new Comparator<File>() {
+            @Override
+            public int compare(File lhs, File rhs) {
+                if (lhs == null && rhs == null) {
+                    return 0;
+                }
+                if (lhs == null) {
+                    return -1;
+                }
+                if (rhs == null) {
+                    return 1;
+                }
+
+                final String lhsName = lhs.getName();
+                final String rhsName = rhs.getName();
+                if (lhsName.equals(rhsName)) {
+                    return 0;
+                }
+
+                final String testDexSuffix = ShareConstants.TEST_DEX_NAME;
+                // test.dex should always be at tail.
+                if (lhsName.startsWith(testDexSuffix)) {
+                    return 1;
+                }
+                if (rhsName.startsWith(testDexSuffix)) {
+                    return -1;
+                }
+
+                final boolean isLhsNameMatchClassN = matchesClassNPatternMemo.get(lhsName);
+                final boolean isRhsNameMatchClassN = matchesClassNPatternMemo.get(rhsName);
+                if (isLhsNameMatchClassN && isRhsNameMatchClassN) {
+                    final int lhsDotPos = lhsName.indexOf('.');
+                    final int rhsDotPos = rhsName.indexOf('.');
+                    final int lhsId = (lhsDotPos > 7 ? Integer.parseInt(lhsName.substring(7, lhsDotPos)) : 1);
+                    final int rhsId = (rhsDotPos > 7 ? Integer.parseInt(rhsName.substring(7, rhsDotPos)) : 1);
+                    return (lhsId == rhsId ? 0 : (lhsId < rhsId ? -1 : 1));
+                } else if (isLhsNameMatchClassN) {
+                    // Dex name that matches class N rules should always be at first.
+                    return -1;
+                } else if (isRhsNameMatchClassN) {
+                    return 1;
+                }
+                return lhsName.compareTo(rhsName);
+            }
+        });
+
+        return result;
+    }
+
+    /**
+     * Installer for platform huawei ark
+     */
+    private static final class ArkHot {
+        private static void install(ClassLoader loader, List<File> additionalClassPathEntries)
+                throws IllegalArgumentException, IllegalAccessException, NoSuchMethodException,
+                InvocationTargetException, IOException, ClassNotFoundException, SecurityException {
+            Class<?>  extendedClassLoaderHelper = ClassLoader.getSystemClassLoader()
+                    .getParent().loadClass("com.huawei.ark.classloader.ExtendedClassLoaderHelper");
+
+            for (File file : additionalClassPathEntries) {
+                String path = file.getCanonicalPath();
+                Method applyPatchMethod = extendedClassLoaderHelper.getDeclaredMethod(
+                        "applyPatch", ClassLoader.class, String.class);
+                applyPatchMethod.setAccessible(true);
+                applyPatchMethod.invoke(null, loader, path);
+                Log.i(TAG, "ArkHot install path = " + path);
+            }
+        }
     }
 
     /**
@@ -303,7 +402,7 @@ public class SystemClassLoaderAdder {
             try {
                 ShareReflectUtil.expandFieldArray(loader, "mDexs", extraDexs);
             } catch (Exception e) {
-
+                // Ignored.
             }
         }
     }
